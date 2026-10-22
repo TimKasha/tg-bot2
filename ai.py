@@ -22,6 +22,27 @@ AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
 # если основная модель недоступна (нет доступа у ключа/устарела), бот сам пробует эти:
 AI_FALLBACKS = [m.strip() for m in (os.getenv("AI_FALLBACK_MODELS") or "gemini-3.6-flash,gemini-3.5-flash").split(",") if m.strip()]
+
+# Резервные «мозги» (необязательно): основной провайдер залёг — бот их попробует.
+#   OPENROUTER_API_KEY — бесплатные модели OpenRouter (без карты): ключ → openrouter.ai/keys
+#   DEEPSEEK_API_KEY   — прямое API DeepSeek (платное, копеечное): platform.deepseek.com
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+
+
+def _providers() -> list[tuple[str, str, list[str]]]:
+    """Порядок «мозгов»: [(base_url, api_key, модели)] — кто с ключом, тот и в списке."""
+    out = []
+    if AI_API_KEY:
+        out.append((AI_BASE_URL, AI_API_KEY,
+                    [AI_MODEL] + [m for m in AI_FALLBACKS if m and m != AI_MODEL]))
+    if OPENROUTER_KEY:
+        models = [m.strip() for m in (os.getenv("OPENROUTER_MODELS") or "openrouter/free").split(",") if m.strip()]
+        out.append(("https://openrouter.ai/api/v1", OPENROUTER_KEY, models))
+    if DEEPSEEK_KEY:
+        models = [m.strip() for m in (os.getenv("DEEPSEEK_MODELS") or "deepseek-chat,deepseek-reasoner").split(",") if m.strip()]
+        out.append(("https://api.deepseek.com/v1", DEEPSEEK_KEY, models))
+    return out
 TTS_VOICE = os.getenv("TTS_VOICE", "ru-RU-DmitryNeural")
 
 log = logging.getLogger("bot.ai")
@@ -74,13 +95,13 @@ def build_system(s: dict, chat_title: str = "", facts: str = "") -> str:
     return p + persona_text(s)
 
 
-async def _call_chat(client: "httpx.AsyncClient", model: str, messages: list,
+async def _call_chat(client: "httpx.AsyncClient", base_url: str, api_key: str, model: str, messages: list,
                      temperature: float, max_tokens: int) -> str:
     payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     r = await client.post(
-        f"{AI_BASE_URL}/chat/completions",
+        f"{base_url}/chat/completions",
         json=payload,
-        headers={"Authorization": f"Bearer {AI_API_KEY}"},
+        headers={"Authorization": f"Bearer {api_key}"},
     )
     r.raise_for_status()
     data = r.json()
@@ -94,43 +115,46 @@ async def _call_chat(client: "httpx.AsyncClient", model: str, messages: list,
 
 
 async def chat(messages: list, temperature: float = 0.9, max_tokens: int = 800) -> str:
-    """Базовый запрос к OpenAI-совместимому /chat/completions с авто-фоллбэком по моделям."""
-    if not AI_API_KEY:
+    """Запрос к OpenAI-совместимому /chat/completions: фоллбэк по моделям и провайдерам."""
+    providers = _providers()
+    if not providers:
         return (
             "⚠️ Бот работает, но «мозг» не подключён: не задан AI_API_KEY.\n"
             "Посмотри шаг 3 в README.md — ключ берётся бесплатно за пару минут."
         )
-    chain = [AI_MODEL] + [m for m in AI_FALLBACKS if m and m != AI_MODEL]
     last_err: Exception | None = None
-    async with httpx.AsyncClient(timeout=90) as client:
-        for model in chain:
-            for attempt in range(3):
-                try:
-                    return await _call_chat(client, model, messages, temperature, max_tokens)
-                except httpx.HTTPStatusError as e:
-                    code = e.response.status_code if e.response is not None else 0
-                    text = (e.response.text if e.response is not None else "")[:300].lower()
-                    last_err = e
-                    # модель недоступна у этого ключа / переименована → идём к следующей
-                    if code in (404, 400) and ("model" in text or "not found" in text or "not supported" in text):
-                        log.warning("Модель %s недоступна (%s), пробую следующую…", model, text[:120])
+    for base_url, api_key, chain in providers:
+        async with httpx.AsyncClient(timeout=90) as client:
+            for model in chain:
+                for attempt in range(3):
+                    try:
+                        return await _call_chat(client, base_url, api_key, model, messages, temperature, max_tokens)
+                    except httpx.HTTPStatusError as e:
+                        code = e.response.status_code if e.response is not None else 0
+                        text = (e.response.text if e.response is not None else "")[:300].lower()
+                        last_err = e
+                        # модель недоступна у этого ключа / переименована → идём к следующей
+                        if code in (404, 400) and ("model" in text or "not found" in text or "not supported" in text):
+                            log.warning("Модель %s недоступна (%s), пробую следующую…", model, text[:120])
+                            break
+                        # перегруз/сбой провайдера — считаем временным: до 3 попыток на модель
+                        if code in (408, 429, 500, 502, 503, 504) and attempt < 2:
+                            pause = (2, 6)[attempt]
+                            log.warning("Сбой %s у %s, пауза %s c (попытка %d/3)", code, model, pause, attempt + 1)
+                            await asyncio.sleep(pause)
+                            continue
+                        log.warning("Провайдер %s недоступен (код %s), пробую следующий…", base_url, code)
                         break
-                    # перегруз/сбой провайдера — считаем временным: до 3 попыток на модель
-                    if code in (408, 429, 500, 502, 503, 504) and attempt < 2:
-                        pause = (2, 6)[attempt]
-                        log.warning("Сбой %s у %s, пауза %s c (попытка %d/3)", code, model, pause, attempt + 1)
-                        await asyncio.sleep(pause)
-                        continue
-                    raise
-                except (httpx.TransportError, RuntimeError) as e:
-                    # сеть/протокол/пустой ответ — тоже до 3 попыток
-                    last_err = e
-                    if attempt < 2:
-                        pause = (2, 6)[attempt]
-                        log.warning("Сбой сети (%s) у %s, пауза %s c (попытка %d/3)", type(e).__name__, model, pause, attempt + 1)
-                        await asyncio.sleep(pause)
-                        continue
-                    raise
+                    except (httpx.TransportError, RuntimeError) as e:
+                        # сеть/протокол/пустой ответ — тоже до 3 попыток
+                        last_err = e
+                        if attempt < 2:
+                            pause = (2, 6)[attempt]
+                            log.warning("Сбой сети (%s) у %s, пауза %s c (попытка %d/3)", type(e).__name__, model, pause, attempt + 1)
+                            await asyncio.sleep(pause)
+                            continue
+                        log.warning("Сбоит провайдер %s (%s), пробую следующий…", base_url, type(e).__name__)
+                        break
     raise last_err or RuntimeError("модель недоступна")
 
 

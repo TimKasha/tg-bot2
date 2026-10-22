@@ -1,10 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "services": {
-    "webapp": { "root": "." }
+    "webapp": { "root": ".", "entrypoint": "webapp:app" }
   },
   "rewrites": [
-    { "source": "/app", "destination": "/app.html" },
     { "source": "/(.*)", "destination": { "service": "webapp" } }
   ]
 }

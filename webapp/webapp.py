@@ -114,6 +114,13 @@ def health():
     return "бот жив 🟢", 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
+@app.route("/api/index")
+def health_alias():
+    # страховка: если Vercel доставит в функцию переписанный путь /api/index,
+    # health всё равно ответит (см. vercel.json rewrites)
+    return health()
+
+
 @app.route("/app")
 def app_page():
     try:

@@ -16,11 +16,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai").strip().rstrip("/")
+AI_BASE_URL = (os.getenv("AI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai").strip().rstrip("/")
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
 # если основная модель недоступна (нет доступа у ключа/устарела), бот сам пробует эти:
-AI_FALLBACKS = [m.strip() for m in os.getenv("AI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash").split(",") if m.strip()]
+AI_FALLBACKS = [m.strip() for m in (os.getenv("AI_FALLBACK_MODELS") or "gemini-3.6-flash,gemini-3.5-flash").split(",") if m.strip()]
 TTS_VOICE = os.getenv("TTS_VOICE", "ru-RU-DmitryNeural")
 
 log = logging.getLogger("bot.ai")

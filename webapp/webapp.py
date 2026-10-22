@@ -111,7 +111,7 @@ def _validate(new: dict, cur: dict) -> dict:
 
 @app.route("/")
 def health():
-    return "бот жив 🟢", 200, {"Content-Type": "text/html; charset=utf-8"}
+    return "бот жив 🟢 v2", 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
 @app.route("/api/index")
@@ -121,12 +121,21 @@ def health_alias():
     return health()
 
 
-@app.route("/app")
-def app_page():
+def _app_page():
     try:
         return send_from_directory(BASE_DIR, "app.html")
     except Exception:
         return "<h1>app.html не найден</h1>", 404, {"Content-Type": "text/html; charset=utf-8"}
+
+
+@app.route("/app")
+def app_page():
+    return _app_page()
+
+
+@app.route("/app.html")
+def app_page_alias():
+    return _app_page()
 
 
 @app.route("/api/settings", methods=["POST"])

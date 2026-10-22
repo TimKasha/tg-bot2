@@ -18,7 +18,9 @@ load_dotenv()
 
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai").strip().rstrip("/")
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
-AI_MODEL = os.getenv("AI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+AI_MODEL = os.getenv("AI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+# если основная модель недоступна (нет доступа у ключа/устарела), бот сам пробует эти:
+AI_FALLBACKS = [m.strip() for m in os.getenv("AI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash").split(",") if m.strip()]
 TTS_VOICE = os.getenv("TTS_VOICE", "ru-RU-DmitryNeural")
 
 log = logging.getLogger("bot.ai")
@@ -48,6 +50,7 @@ TONE_LABELS = {
     "night": "Ночной собеседник 🌙",
 }
 GROUP_MODES = {"off": "выключен 🤐", "mention": "по обращению 👋", "always": "отвечает на всё 💬"}
+DEFAULT_BOT_NAME = "Олег"
 
 
 def persona_text(s: dict) -> str:
@@ -57,7 +60,12 @@ def persona_text(s: dict) -> str:
 
 
 def build_system(s: dict, chat_title: str = "", facts: str = "") -> str:
-    p = BASE_SYSTEM.format(now=datetime.datetime.now().strftime("%d.%m.%Y %H:%M"))
+    name = (s.get("bot_name") or DEFAULT_BOT_NAME).strip() or DEFAULT_BOT_NAME
+    p = (
+        f"Тебя зовут {name} — это твоё имя в этом чате. Участники зовут тебя по имени: "
+        f"откликайся, ты и есть {name}, и себя ответом не подписывай иначе.\n"
+        + BASE_SYSTEM.format(now=datetime.datetime.now().strftime("%d.%m.%Y %H:%M"))
+    )
     if chat_title:
         p += f"\nЭто групповой чат «{chat_title}»."
     if facts:
@@ -65,22 +73,16 @@ def build_system(s: dict, chat_title: str = "", facts: str = "") -> str:
     return p + persona_text(s)
 
 
-async def chat(messages: list, temperature: float = 0.9, max_tokens: int = 800) -> str:
-    """Базовый запрос к OpenAI-совместимому /chat/completions."""
-    if not AI_API_KEY:
-        return (
-            "⚠️ Бот работает, но «мозг» не подключён: не задан AI_API_KEY.\n"
-            "Посмотри шаг 3 в README.md — ключ берётся бесплатно за пару минут."
-        )
-    payload = {"model": AI_MODEL, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    async with httpx.AsyncClient(timeout=90) as client:
-        r = await client.post(
-            f"{AI_BASE_URL}/chat/completions",
-            json=payload,
-            headers={"Authorization": f"Bearer {AI_API_KEY}"},
-        )
-        r.raise_for_status()
-        data = r.json()
+async def _call_chat(client: "httpx.AsyncClient", model: str, messages: list,
+                     temperature: float, max_tokens: int) -> str:
+    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    r = await client.post(
+        f"{AI_BASE_URL}/chat/completions",
+        json=payload,
+        headers={"Authorization": f"Bearer {AI_API_KEY}"},
+    )
+    r.raise_for_status()
+    data = r.json()
     try:
         content = data["choices"][0]["message"]["content"].strip()
     except Exception:
@@ -88,6 +90,31 @@ async def chat(messages: list, temperature: float = 0.9, max_tokens: int = 800) 
     if not content:
         raise RuntimeError("пустой ответ (возможно, сработал фильтр провайдера)")
     return content
+
+
+async def chat(messages: list, temperature: float = 0.9, max_tokens: int = 800) -> str:
+    """Базовый запрос к OpenAI-совместимому /chat/completions с авто-фоллбэком по моделям."""
+    if not AI_API_KEY:
+        return (
+            "⚠️ Бот работает, но «мозг» не подключён: не задан AI_API_KEY.\n"
+            "Посмотри шаг 3 в README.md — ключ берётся бесплатно за пару минут."
+        )
+    chain = [AI_MODEL] + [m for m in AI_FALLBACKS if m and m != AI_MODEL]
+    last_err: Exception | None = None
+    async with httpx.AsyncClient(timeout=90) as client:
+        for model in chain:
+            try:
+                return await _call_chat(client, model, messages, temperature, max_tokens)
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code if e.response is not None else 0
+                text = (e.response.text if e.response is not None else "")[:300].lower()
+                # модель недоступна у этого ключа / переименована → пробуем следующую
+                if code in (404, 400) and ("model" in text or "not found" in text or "not supported" in text):
+                    log.warning("Модель %s недоступна (%s), пробую следующую…", model, text[:120])
+                    last_err = e
+                    continue
+                raise
+    raise last_err or RuntimeError("модель недоступна")
 
 
 async def transcribe(data: bytes, mime: str = "audio/ogg") -> str | None:

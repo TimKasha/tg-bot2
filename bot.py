@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 import httpx
 from dotenv import load_dotenv
-from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, Update, WebAppInfo
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -49,7 +49,6 @@ log = logging.getLogger("bot")
 
 import ai      # noqa: E402
 import storage # noqa: E402
-import webapp  # noqa: E402
 
 try:
     from telegram.ext import MessageReactionHandler
@@ -124,6 +123,10 @@ def should_reply(update: Update, s: dict, context: ContextTypes.DEFAULT_TYPE, te
         return True
     username = context.bot.username
     if username and f"@{username.lower()}" in text_lower:
+        return True
+    # имя бота («Олег», «Олега», «Олегу»…) — слово + любые окончания
+    name = (s.get("bot_name") or "").strip().lower()
+    if name and re.search(rf"\b{re.escape(name)}\w*", text_lower):
         return True
     triggers = [t.strip().lower() for t in s.get("triggers", "").split(",") if t.strip()]
     return any(t in text_lower for t in triggers)
@@ -234,10 +237,12 @@ def store_incoming(update: Update, text: str | None = None) -> None:
 
 # ---------- команды: разговоры и настройка ----------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    s = storage.get_settings(update.effective_chat.id)
+    my = s.get("bot_name") or storage.DEFAULT_BOT_NAME
     await update.effective_message.reply_text(
-        f"Привет! Я {context.bot.first_name} — бот-собеседник 👋\n"
+        f"Привет! Я {my} — бот-собеседник 👋\n"
         "Пиши мне в личке или возьми в беседу. Основное:\n\n"
-        "🎭 /tone — мой характер · /persona свой вариант\n"
+        "🎭 /tone — мой характер · /persona свой вариант · /name — моё имя\n"
         "⚙️ /settings — настройки (+ кнопка приложения)\n"
         "💬 /mode — как отвечать в беседах\n"
         "🌙 /daily — вечерняя сводка дня в 22:00 (кто активный, смешной + квиз)\n"
@@ -256,6 +261,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎭 Характер и настройка:\n"
         "/tone — готовые характеры (кнопки)\n"
         "/persona текст — свой характер одной фразой\n"
+        "/name имя — как меня зовут в чате (отзовусь на него)\n"
         "/settings — сводка настроек (в личке — кнопка приложения)\n"
         "/mode — режимы в беседах\n"
         "/triggers слова,через,запятую — слова-клички\n"
@@ -383,6 +389,30 @@ async def cmd_triggers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(f"Триггер-слова сохранены: {s['triggers']}")
 
 
+async def cmd_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Имя бота: как к нему обращаться (бот отзывается на него в беседах)."""
+    chat = update.effective_chat
+    s = storage.get_settings(chat.id)
+    cur = s.get("bot_name") or storage.DEFAULT_BOT_NAME
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await update.effective_message.reply_text(
+            f"Меня зовут: {cur} 😉\n"
+            "Переименовать: /name Вася\n"
+            "Зови по имени в беседе — откликнусь (в режиме «по обращению»)."
+        )
+        return
+    if len(text) < 2 or len(text) > 50:
+        await update.effective_message.reply_text("Имя от 2 до 50 символов, например: /name Олег")
+        return
+    s["bot_name"] = text
+    storage.save_settings(chat.id, s)
+    await update.effective_message.reply_text(
+        f"Теперь я {text}! Зови меня по имени — откликнусь.\n"
+        "Если имя склоняется нестандартно, добавь формы и в /triggers."
+    )
+
+
 async def cmd_stopwords(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     s = storage.get_settings(chat.id)
@@ -408,11 +438,12 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     persona = ("Свой: «" + (s["persona_text"] or "—") + "»") if s["persona"] == "custom" \
         else ai.TONE_LABELS.get(s["persona"], "?")
     kb = None
-    url = webapp.mini_app_url(chat.id)
+    url = f"{PUBLIC_URL}/app?chat={chat.id}" if PUBLIC_URL else None
     if chat.type == "private" and url:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Открыть приложение настроек", web_app=WebAppInfo(url=url))]])
     await update.effective_message.reply_text(
         "⚙️ Настройки чата:\n"
+        f"📛 Имя: {s.get('bot_name') or storage.DEFAULT_BOT_NAME}\n"
         f"🎭 Характер: {persona}\n"
         f"🗣 Режим в беседах: {ai.GROUP_MODES.get(s['group_mode'], '?')}\n"
         f"🎯 Триггеры: {s.get('triggers') or '—'}\n"
@@ -1110,7 +1141,13 @@ async def on_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- запуск ----------
 async def post_init(app: Application):
-    webapp.set_application(app)
+    # Кнопка меню Mini App (когда есть публичный адрес на Vercel)
+    if PUBLIC_URL:
+        try:
+            await app.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="⚙️ Настройки", web_app=WebAppInfo(url=f"{PUBLIC_URL}/app")))
+        except Exception:
+            log.warning("Не получилось поставить меню-кнопку Mini App")
     if app.job_queue:
         app.job_queue.run_repeating(reminders_job, interval=30, first=10)
         app.job_queue.run_repeating(daily_job, interval=300, first=90)
@@ -1118,11 +1155,6 @@ async def post_init(app: Application):
         log.warning("JobQueue недоступен — напоминания и сводка не заработают (поставь python-telegram-bot[job-queue])")
     me = await app.bot.get_me()
     log.info("Бот @%s запущен", me.username)
-    await webapp.start()
-
-
-async def post_shutdown(app: Application):
-    await webapp.stop()
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -1136,12 +1168,11 @@ def main():
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
-        .post_shutdown(post_shutdown)
         .build()
     )
     commands = {
         "start": cmd_start, "help": cmd_help, "ask": cmd_ask, "tone": cmd_tone,
-        "persona": cmd_persona, "mode": cmd_mode, "triggers": cmd_triggers,
+        "persona": cmd_persona, "name": cmd_name, "mode": cmd_mode, "triggers": cmd_triggers,
         "stopwords": cmd_stopwords, "settings": cmd_settings, "reset": cmd_reset,
         "joke": cmd_joke, "weather": cmd_weather, "remind": cmd_remind,
         "reminders": cmd_reminders, "digest": cmd_digest, "daily": cmd_daily,

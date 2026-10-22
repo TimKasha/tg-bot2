@@ -45,6 +45,8 @@
 <div class="muted" id="who">Загрузка…</div>
 
 <section>
+  <label>📛 Имя бота (в беседе зови его по имени — откликнется)</label>
+  <input type="text" id="bot_name" maxlength="50" placeholder="Олег">
   <label>🎭 Тон общения</label>
   <div class="chips" id="tones"></div>
   <label>✍️ Свой характер (в приоритете)</label>
@@ -84,7 +86,11 @@
 const TONES = {"friendly":"Дружелюбный 🤝","sarkast":"Саркастичный 😏","gopnik":"Гопник 🧢","mudrets":"Мудрец 🧙","night":"Ночной 🌙"};
 const MODES = {"off":"🤐 Молчать","mention":"👋 По обращению","always":"💬 На всё"};
 const wa = window.Telegram && window.Telegram.WebApp;
-const chat = new URLSearchParams(location.search).get("chat") || '';
+// chat id берём из адреса (?chat=), иначе из initData (меню-кнопка), иначе для лички — user.id
+const u0 = (wa && wa.initDataUnsafe) || {};
+let chat = new URLSearchParams(location.search).get("chat") || '';
+if (!chat && u0.chat && u0.chat.id) chat = String(u0.chat.id);
+if (!chat && u0.chat_type === 'private' && u0.user && u0.user.id) chat = String(u0.user.id);
 let state = {};
 
 function el(id){ return document.getElementById(id); }
@@ -114,6 +120,7 @@ async function load(){
   const d = await api('load');
   if (!d || !d.ok) { el('status').textContent = (d && d.error) || 'Ошибка загрузки'; return; }
   state = d.s;
+  el('bot_name').value = state.bot_name || 'Олег';
   el('persona_text').value = state.persona_text || '';
   el('triggers').value = state.triggers || '';
   el('stopwords').value = state.stopwords || '';
@@ -127,6 +134,7 @@ async function load(){
 }
 el('save').onclick = async () => {
   if (!wa) return;
+  state.bot_name = el('bot_name').value.trim() || 'Олег';
   state.persona_text = el('persona_text').value.trim();
   state.triggers = el('triggers').value.trim();
   state.stopwords = el('stopwords').value.trim();

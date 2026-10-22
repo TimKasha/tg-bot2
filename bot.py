@@ -207,7 +207,13 @@ async def answ(update: Update, context: ContextTypes.DEFAULT_TYPE, question: str
         reply = await ai.chat(messages)
     except Exception as e:
         log.exception("Ошибка при запросе к модели")
-        await msg.reply_text(f"⚠️ Модель не ответила: {str(e)[:200]}")
+        code = getattr(getattr(e, "response", None), "status_code", 0)
+        if code:
+            await msg.reply_text(
+                f"⚠️ Модель перегружена (ошибка {code}). Попробуй ещё раз через минуту — обычно отвечает 🙏"
+            )
+        else:
+            await msg.reply_text("⚠️ Модель не ответила (сетевой сбой). Попробуй ещё раз через минуту 🙏")
         return
     storage.push_history(chat.id, "assistant", reply)
     await send_text(update, context, reply)

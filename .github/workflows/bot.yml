@@ -1,0 +1,29 @@
+name: bot
+on:
+  schedule:
+    - cron: "0 */5 * * *"   # каждые 5 часов — новый прогон перезапускает бота
+  workflow_dispatch:         # кнопка «Run workflow» для ручного старта
+
+concurrency:
+  group: bot-run
+  cancel-in-progress: true   # новый прогон прибивает старый — ноль дублей
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355     # чуть меньше 6 часов — потом подхватит новый прогон
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Run bot
+        run: python bot.py
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          PUBLIC_URL: ${{ secrets.PUBLIC_URL }}

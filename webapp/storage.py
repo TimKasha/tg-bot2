@@ -13,13 +13,22 @@
 import json
 import logging
 import os
+import re
 
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPA_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+# Не ругаемся на частые ошибки копирования из дашборда Supabase:
+# «...supabase.co/rest/v1/» и лишние пробелы — отрезаем автоматически.
+def _clean_supa_url(u: str) -> str:
+    u = (u or "").strip().rstrip("/")
+    u = re.sub(r"/rest/v1/?$", "", u, flags=re.I)
+    u = re.sub(r"/pg/?$", "", u, flags=re.I)
+    return u
+
+SUPA_URL = _clean_supa_url(os.getenv("SUPABASE_URL", ""))
 SUPA_KEY = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
 USE_SUPA = bool(SUPA_URL and SUPA_KEY)
 

@@ -3,6 +3,7 @@
 «Мозг» бота: запросы к любому OpenAI-совместимому API,
 расшифровка голосовых, синтез речи, генерация квизов.
 """
+import asyncio
 import base64
 import datetime
 import io
@@ -103,17 +104,33 @@ async def chat(messages: list, temperature: float = 0.9, max_tokens: int = 800) 
     last_err: Exception | None = None
     async with httpx.AsyncClient(timeout=90) as client:
         for model in chain:
-            try:
-                return await _call_chat(client, model, messages, temperature, max_tokens)
-            except httpx.HTTPStatusError as e:
-                code = e.response.status_code if e.response is not None else 0
-                text = (e.response.text if e.response is not None else "")[:300].lower()
-                # модель недоступна у этого ключа / переименована → пробуем следующую
-                if code in (404, 400) and ("model" in text or "not found" in text or "not supported" in text):
-                    log.warning("Модель %s недоступна (%s), пробую следующую…", model, text[:120])
+            for attempt in range(3):
+                try:
+                    return await _call_chat(client, model, messages, temperature, max_tokens)
+                except httpx.HTTPStatusError as e:
+                    code = e.response.status_code if e.response is not None else 0
+                    text = (e.response.text if e.response is not None else "")[:300].lower()
                     last_err = e
-                    continue
-                raise
+                    # модель недоступна у этого ключа / переименована → идём к следующей
+                    if code in (404, 400) and ("model" in text or "not found" in text or "not supported" in text):
+                        log.warning("Модель %s недоступна (%s), пробую следующую…", model, text[:120])
+                        break
+                    # перегруз/сбой провайдера — считаем временным: до 3 попыток на модель
+                    if code in (408, 429, 500, 502, 503, 504) and attempt < 2:
+                        pause = (2, 6)[attempt]
+                        log.warning("Сбой %s у %s, пауза %s c (попытка %d/3)", code, model, pause, attempt + 1)
+                        await asyncio.sleep(pause)
+                        continue
+                    raise
+                except (httpx.TransportError, RuntimeError) as e:
+                    # сеть/протокол/пустой ответ — тоже до 3 попыток
+                    last_err = e
+                    if attempt < 2:
+                        pause = (2, 6)[attempt]
+                        log.warning("Сбой сети (%s) у %s, пауза %s c (попытка %d/3)", type(e).__name__, model, pause, attempt + 1)
+                        await asyncio.sleep(pause)
+                        continue
+                    raise
     raise last_err or RuntimeError("модель недоступна")
 
 

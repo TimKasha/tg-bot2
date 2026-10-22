@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]~=21.9
+aiohttp~=3.11
+python-dotenv~=1.0
+edge-tts~=7.0
+youtube-transcript-api~=1.0

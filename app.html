@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>⚙️ Настройки бота</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+         background: var(--tg-theme-bg-color, #17212b);
+         color: var(--tg-theme-text-color, #fff); margin: 0; padding: 16px 16px 110px; }
+  h1 { font-size: 18px; margin: 4px 0 2px; }
+  .muted { color: var(--tg-theme-hint-color, #8a99a8); font-size: 13px; }
+  section { background: var(--tg-theme-secondary-bg-color, #232e3c); border-radius: 14px; padding: 12px; margin: 12px 0; }
+  label { display: block; font-size: 13px; color: var(--tg-theme-hint-color, #8a99a8); margin: 10px 0 6px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--tg-theme-hint-color, #3b4a5a);
+          background: transparent; color: var(--tg-theme-text-color); font-size: 14px; cursor: pointer; }
+  .chip.on { background: var(--tg-theme-button-color, #5288c1); border-color: transparent;
+             color: var(--tg-theme-button-text-color, #fff); }
+  .seg { display: flex; gap: 8px; }
+  .seg .chip { flex: 1; text-align: center; }
+  input[type=text], textarea, input[type=time], input[type=number] {
+    width: 100%; background: var(--tg-theme-bg-color, #17212b); color: var(--tg-theme-text-color);
+    border: 1px solid rgba(128,128,128,.3); border-radius: 10px; padding: 10px; font-size: 14px; }
+  textarea { min-height: 74px; resize: vertical; }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .switch { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 4px; font-size: 14px; }
+  .switch input { width: 20px; height: 20px; }
+  footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px;
+           background: var(--tg-theme-secondary-bg-color, #232e3c);
+           box-shadow: 0 -6px 20px rgba(0,0,0,.35); }
+  button.primary { width: 100%; padding: 14px; border: none; border-radius: 12px;
+                   background: var(--tg-theme-button-color, #5288c1);
+                   color: var(--tg-theme-button-text-color, #fff); font-size: 16px; font-weight: 600; cursor: pointer; }
+  button.primary:disabled { opacity: .6; }
+  #status { text-align: center; margin-top: 6px; font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+<h1>⚙️ Настройки бота</h1>
+<div class="muted" id="who">Загрузка…</div>
+
+<section>
+  <label>🎭 Тон общения</label>
+  <div class="chips" id="tones"></div>
+  <label>✍️ Свой характер (в приоритете)</label>
+  <textarea id="persona_text" placeholder="Опиши характер своими словами…"></textarea>
+</section>
+
+<section>
+  <label>💬 Как отвечать в беседах</label>
+  <div class="seg" id="modes"></div>
+  <label>🎯 Триггер-слова (через запятую)</label>
+  <input type="text" id="triggers" placeholder="ботан,красавчик">
+</section>
+
+<section>
+  <label>🛡 Стоп-слова (удалю такие сообщения, если я админ)</label>
+  <input type="text" id="stopwords" placeholder="реклама,спам">
+  <div class="switch"><span>Антифлуд</span><input type="checkbox" id="antiflood"></div>
+  <label>Лимит сообщений / 10 сек</label>
+  <input type="number" id="flood_limit" min="3" max="60">
+</section>
+
+<section>
+  <div class="switch"><span>🌙 Ежедневная вечерняя сводка</span><input type="checkbox" id="daily"></div>
+  <div class="row">
+    <div><label>Время</label><input type="time" id="daily_time"></div>
+    <div><label>Часовой пояс UTC±</label><input type="number" id="tz_offset" min="-12" max="14"></div>
+  </div>
+  <div class="muted" style="margin-top:8px">В сводку войдут итоги дня: кто активнее, кто смешнее и небольшой квиз.</div>
+</section>
+
+<footer>
+  <button class="primary" id="save">💾 Сохранить</button>
+  <div id="status"></div>
+</footer>
+
+<script>
+const TONES = {"friendly":"Дружелюбный 🤝","sarkast":"Саркастичный 😏","gopnik":"Гопник 🧢","mudrets":"Мудрец 🧙","night":"Ночной 🌙"};
+const MODES = {"off":"🤐 Молчать","mention":"👋 По обращению","always":"💬 На всё"};
+const wa = window.Telegram && window.Telegram.WebApp;
+const chat = new URLSearchParams(location.search).get("chat") || '';
+let state = {};
+
+function el(id){ return document.getElementById(id); }
+function chips(boxId, map, key){
+  const box = el(boxId); box.innerHTML = '';
+  for (const [k, label] of Object.entries(map)) {
+    const b = document.createElement('button');
+    b.className = 'chip' + (state[key] === k ? ' on' : '');
+    b.textContent = label;
+    b.onclick = () => { state[key] = k; [...box.children].forEach(x => x.classList.remove('on')); b.classList.add('on'); };
+    box.appendChild(b);
+  }
+}
+async function api(action, extra = {}){
+  if (!wa) { el('status').textContent = 'Открой это из чата с ботом: /settings'; return null; }
+  const r = await fetch('/api/settings', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(Object.assign({ initData: wa.initData, chat: chat, action: action }, extra))
+  });
+  return r.json();
+}
+async function load(){
+  if (!wa) { el('who').textContent = 'Это приложение открывается из Telegram: напиши боту /settings'; return; }
+  try { wa.expand(); wa.ready(); } catch(e) {}
+  const u = (wa.initDataUnsafe && wa.initDataUnsafe.user) || {};
+  el('who').textContent = u.first_name ? 'Привет, ' + u.first_name + ' 👋' : '';
+  const d = await api('load');
+  if (!d || !d.ok) { el('status').textContent = (d && d.error) || 'Ошибка загрузки'; return; }
+  state = d.s;
+  el('persona_text').value = state.persona_text || '';
+  el('triggers').value = state.triggers || '';
+  el('stopwords').value = state.stopwords || '';
+  el('antiflood').checked = !!state.antiflood;
+  el('flood_limit').value = state.flood_limit || 8;
+  el('daily').checked = !!state.daily;
+  el('daily_time').value = state.daily_time || '22:00';
+  el('tz_offset').value = (typeof state.tz_offset === 'number' ? state.tz_offset : 3);
+  chips('tones', TONES, 'persona');
+  chips('modes', MODES, 'group_mode');
+}
+el('save').onclick = async () => {
+  if (!wa) return;
+  state.persona_text = el('persona_text').value.trim();
+  state.triggers = el('triggers').value.trim();
+  state.stopwords = el('stopwords').value.trim();
+  state.antiflood = el('antiflood').checked;
+  state.flood_limit = Math.max(3, Math.min(60, parseInt(el('flood_limit').value || '8', 10) || 8));
+  state.daily = el('daily').checked;
+  state.daily_time = el('daily_time').value || '22:00';
+  state.tz_offset = Math.max(-12, Math.min(14, parseInt(el('tz_offset').value || '3', 10) || 3));
+  el('save').disabled = true;
+  const d = await api('save', { s: state });
+  el('save').disabled = false;
+  el('status').textContent = (d && d.ok) ? 'Сохранено ✅' : ((d && d.error) || 'Ошибка сохранения');
+  if (d && d.ok) setTimeout(() => { try { wa.close(); } catch(e) {} }, 900);
+};
+load();
+</script>
+</body>
+</html>
